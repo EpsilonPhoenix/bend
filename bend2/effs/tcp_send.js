@@ -13,6 +13,9 @@ function tcp_send_with(socket, b, k, at) {
       const n = Number(sys.send(fd, sys.ptr(part), part.length, 0));
       if (n < 0) {
         const code = sys.errno();
+        if (code === 4) {
+          continue;
+        }
         if (code !== again) {
           const fail = io_fail(code, io_list(part, part.length));
           return io_tup(socket, io_ready(at, fail));
