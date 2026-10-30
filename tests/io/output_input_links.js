@@ -15,7 +15,7 @@ function output_input_links() {
     ["effect.c", "// Foreign input.\n"],
   ].map(([name, text]) => [path.join(dir, name), text]));
   const main = path.join(dir, "main.bend");
-  const options = { encoding: "utf8", timeout: 4000,
+  const options = { encoding: "utf8", timeout: 30000,
     env: { ...process.env, HOME: dir, BEND_ORIGIN: "http://127.0.0.1:9",
       BEND_NO_TELEMETRY: "1" },
   };
@@ -73,11 +73,44 @@ function output_input_links() {
       || fs.readFileSync(alias, "utf8") !== "keep" || !intact()) return code;
     fs.unlinkSync(ok);
     fs.unlinkSync(alias);
+    // Simulate toolkit detection, so a real GPU build would write the sidecar.
     const binAlias = path.join(dir, "other.mjs");
     const binPath = path.join(dir, "collision");
+    const gpuMain = path.join(dir, "bang.bend");
+    fs.writeFileSync(gpuMain, "import Base\ndef f(x: U32) -> U32:\n  x\n"
+      + "def main() -> U32:\n  f!(42)\n");
+    const cuda = path.join(dir, "cuda");
+    fs.mkdirSync(path.join(cuda, "include"), { recursive: true });
+    fs.writeFileSync(path.join(cuda, "include", "nvrtc.h"), "");
     fs.symlinkSync(binPath + ".gpu", binAlias);
-    if (!duplicate(binPath, binAlias) || fs.existsSync(binPath)) return code;
+    const gpu = child.spawnSync(process.execPath, [path.resolve("bend2/main.ts"),
+      gpuMain, "-o", binPath, "-o", binAlias],
+      { ...options, env: { ...options.env, CUDA_HOME: cuda } });
+    if (!rejects(gpu, "conflicts with another output") || fs.existsSync(binPath)
+      || fs.existsSync(binPath + ".gpu")) return code;
     fs.unlinkSync(binAlias);
+    code++;
+    // CPU binaries have no sidecar, so both output names are valid.
+    const cpu = path.join(dir, "cpu");
+    const cpuGpu = cpu + ".gpu";
+    if (build(cpu, cpuGpu).status !== 0) return code;
+    for (const file of [cpu, cpuGpu]) {
+      const ran = child.spawnSync(file, [], options);
+      if (ran.status !== 0 || ran.stdout.trim() !== "42") return code;
+      fs.unlinkSync(file);
+    }
+    // On Linux without CUDA, a bang also builds two CPU-only binaries.
+    if (process.platform === "linux" && ![process.env.CUDA_HOME, process.env.CUDA_PATH,
+      "/usr/local/cuda", "/opt/cuda"].some((d) => d && fs.existsSync(d + "/include/nvrtc.h"))) {
+      const fallback = child.spawnSync(process.execPath, [path.resolve("bend2/main.ts"),
+        gpuMain, "-o", cpu, "-o", cpuGpu], options);
+      if (fallback.status !== 0 || !fallback.stderr.includes("so ! runs on the CPU")) return code;
+      for (const file of [cpu, cpuGpu]) {
+        const ran = child.spawnSync(file, [], options);
+        if (ran.status !== 0 || ran.stdout.trim() !== "42") return code;
+        fs.unlinkSync(file);
+      }
+    }
     code++;
     if (build(ok).status !== 0 || !intact()) return code;
     const run = child.spawnSync(process.execPath, [ok], options);
