@@ -318,15 +318,22 @@ async function cli_file(args: string[]): Promise<void> {
     }
     const ins = new Set([...seen.keys(), ...Object.values(book.tlds).flatMap((t) =>
       t.$ === "Def" && t.i !== undefined ? t.i.map(path_real) : [])]);
+    const written = new Set<string>();
     for (const out of outs) {
       if (output_conflicts(out, ins)) {
         cli_fail("-o " + out + " is a file the program reads, or a directory");
       }
       // A binary's GPU build also writes <binary>.gpu.
-      if (!/\.(mjs|c?js|c|bendtt)$/.test(out)
-        && output_conflicts(out + ".gpu", ins)) {
-        cli_fail("GPU output " + out + ".gpu is a file the program reads, or a"
-          + " directory");
+      const paths = /\.(mjs|c?js|c|bendtt)$/.test(out) ? [out] : [out, out + ".gpu"];
+      for (const p of paths) {
+        if (p !== out && output_conflicts(p, ins)) {
+          cli_fail("GPU output " + p + " is a file the program reads, or a directory");
+        }
+        const at = output_path(p);
+        if (written.has(at) || [...written].some((prev) => same_file(at, prev))) {
+          cli_fail("output " + p + " conflicts with another output");
+        }
+        written.add(at);
       }
     }
     for (const out of outs) {
@@ -379,6 +386,23 @@ async function cli_checkup(file: string): Promise<void> {
 
 function path_real(p: string): string {
   return fs.existsSync(p) ? fs.realpathSync(p) : path.resolve(p);
+}
+
+// Resolve an output even when its final symlink points at a new file.
+function output_path(p: string): string {
+  let at = path.resolve(p);
+  for (let n = 0; n < 40; n += 1) {
+    const dir = path.dirname(at);
+    at = path.join(fs.existsSync(dir) ? fs.realpathSync(dir) : dir, path.basename(at));
+    try {
+      if (!fs.lstatSync(at).isSymbolicLink()) return at;
+      at = path.resolve(path.dirname(at), fs.readlinkSync(at));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return at;
+      throw e;
+    }
+  }
+  throw "Error: too many symbolic links in output " + p;
 }
 
 // same_file compares device and inode, so links to one file agree.

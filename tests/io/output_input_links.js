@@ -51,6 +51,34 @@ function output_input_links() {
       || fs.existsSync(ok)) return code;
     fs.unlinkSync(link);
     code++;
+    // Outputs must also be distinct before any of them is written.
+    const alias = path.join(dir, "alias.mjs");
+    const duplicate = (a, b) => {
+      const got = build(a, b);
+      return got.status === 1 && got.stderr.includes("conflicts with another output")
+        && !fs.existsSync(ok) && intact();
+    };
+    if (!duplicate(ok, ok)) return code;
+    fs.symlinkSync(ok, alias); // dangling when the preflight runs
+    if (!duplicate(ok, alias) || !duplicate(alias, ok)) return code;
+    fs.unlinkSync(alias);
+    const dirLink = path.join(dir, "linked-dir");
+    fs.symlinkSync(dir, dirLink);
+    if (!duplicate(ok, path.join(dirLink, "ok.js"))) return code;
+    fs.unlinkSync(dirLink);
+    fs.writeFileSync(alias, "keep");
+    fs.linkSync(alias, ok);
+    const hard = build(ok, alias);
+    if (hard.status !== 1 || !hard.stderr.includes("conflicts with another output")
+      || fs.readFileSync(alias, "utf8") !== "keep" || !intact()) return code;
+    fs.unlinkSync(ok);
+    fs.unlinkSync(alias);
+    const binAlias = path.join(dir, "other.mjs");
+    const binPath = path.join(dir, "collision");
+    fs.symlinkSync(binPath + ".gpu", binAlias);
+    if (!duplicate(binPath, binAlias) || fs.existsSync(binPath)) return code;
+    fs.unlinkSync(binAlias);
+    code++;
     if (build(ok).status !== 0 || !intact()) return code;
     const run = child.spawnSync(process.execPath, [ok], options);
     if (run.status !== 0 || run.stdout.trim() !== "42") return code;
